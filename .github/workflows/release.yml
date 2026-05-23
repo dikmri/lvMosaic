@@ -96,15 +96,25 @@ jobs:
           chmod +x dist/ffmpeg dist/ffprobe
           find ffmpeg_tmp -name "LICENSE*" | head -1 | xargs -I{} cp {} dist/LICENSE.ffmpeg.txt || true
 
-      # ---- FFmpeg: macOS Intel/ARM64 (brew + dylibbundler で dylib をバンドル) ----
-      # evermeet.cx は応答不安定なため brew に統一
+      # ---- FFmpeg: macOS Intel/ARM64 (dylibbundler で dylib をバンドル) ----
+      # GitHub ランナーには ffmpeg がプリインストール済み。dylibbundler のみ追加インストール。
+      # HOMEBREW_NO_AUTO_UPDATE=1 で brew の自動更新を抑制し高速化。
       - name: Install FFmpeg (macOS)
         if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: |
-          brew install ffmpeg dylibbundler
+          brew install dylibbundler
+          # ffmpeg がプリインストールされていない場合のみ brew でインストール
+          if ! command -v ffmpeg &>/dev/null; then
+            brew install ffmpeg
+          fi
+          FFMPEG_BIN="$(command -v ffmpeg)"
+          FFPROBE_BIN="$(command -v ffprobe)"
           mkdir -p dist/libs
-          cp "$(brew --prefix)/bin/ffmpeg"  dist/
-          cp "$(brew --prefix)/bin/ffprobe" dist/
+          cp "$FFMPEG_BIN"  dist/ffmpeg
+          cp "$FFPROBE_BIN" dist/ffprobe
           dylibbundler -b -x dist/ffmpeg  -d dist/libs -p @executable_path/libs/ -od
           dylibbundler -b -x dist/ffprobe -d dist/libs -p @executable_path/libs/ -od
 
