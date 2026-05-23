@@ -122,7 +122,7 @@ pub struct LvMosaicApp {
     // 再生状態
     current_frame:  u64,
     playing:        bool,
-    last_play_tick: Option<Instant>,
+    _last_play_tick: Option<Instant>,
 
     // プレビューテクスチャ
     preview_texture: Option<TextureHandle>,
@@ -182,9 +182,9 @@ impl LvMosaicApp {
         Self {
             project:    None,
             video_path: None,
-            current_frame:  0,
-            playing:        false,
-            last_play_tick: None,
+            current_frame:   0,
+            playing:         false,
+            _last_play_tick: None,
             preview_texture: None,
             loaded_frame:    None,
             preview_scale:   PreviewScale::Auto,
@@ -247,49 +247,71 @@ impl LvMosaicApp {
         let Some(_) = &self.video_path  else { return };
         let Some(_) = &self.project     else { return };
 
-        // 完了したデコード結果を取得
+        // 完了したデコード結果を取得してテクスチャに反映
+        // フレーム番号の厳密一致は不要: 再生中は常に最新デコード結果を表示する
         loop {
             match self.decode_rx.try_recv() {
                 Ok(result) => {
-                    if result.frame == self.current_frame {
-                        let image = egui::ColorImage::from_rgb(
-                            [result.pw as usize, result.ph as usize],
-                            &result.pixels,
-                        );
-                        self.preview_texture = Some(ctx.load_texture(
-                            "preview", image, TextureOptions::LINEAR,
-                        ));
-                        self.loaded_frame    = Some(result.frame);
-                        self.pending_decode_frame = None;
+                    let image = egui::ColorImage::from_rgb(
+                        [result.pw as usize, result.ph as usize],
+                        &result.pixels,
+                    );
+                    self.preview_texture = Some(ctx.load_texture(
+                        "preview", image, TextureOptions::LINEAR,
+                    ));
+                    self.loaded_frame         = Some(result.frame);
+                    self.pending_decode_frame = None;
+                    // 再生中: タイムラインをデコード済みフレームに同期
+                    if self.playing {
+                        self.current_frame = result.frame;
                     }
-                    // 古いフレームの結果は破棄
                 }
                 Err(TryRecvError::Empty)        => break,
                 Err(TryRecvError::Disconnected) => break,
             }
         }
 
+        // 次にデコードするフレームを決定
+        // 再生中: loaded_frame の次を連続デコード (sequential)
+        // 停止中: 現在のタイムライン位置
+        let target_frame = if self.playing {
+            match self.loaded_frame {
+                Some(f) => {
+                    let next = f + 1;
+                    if next >= self.total_frames() {
+                        // 末尾に達したら停止
+                        self.playing = false;
+                        return;
+                    }
+                    next
+                }
+                None => self.current_frame,
+            }
+        } else {
+            self.current_frame
+        };
+
         // 必要なら新しいデコードリクエストを送信
-        if self.loaded_frame != Some(self.current_frame)
-            && self.pending_decode_frame != Some(self.current_frame)
+        if self.loaded_frame != Some(target_frame)
+            && self.pending_decode_frame != Some(target_frame)
         {
             if let (Some(path), Some(proj)) = (&self.video_path, &self.project) {
                 let scale = self.preview_scale.factor(proj.video.width, proj.video.height);
                 let _ = self.decode_tx.send(Some(DecodeRequest {
                     path:   path.clone(),
-                    frame:  self.current_frame,
+                    frame:  target_frame,
                     fps:    proj.video.fps,
                     width:  proj.video.width,
                     height: proj.video.height,
                     scale,
                 }));
-                self.pending_decode_frame = Some(self.current_frame);
+                self.pending_decode_frame = Some(target_frame);
             }
         }
 
         // デコード待ち中は定期的に再描画してフレーム到着を拾う
-        if self.pending_decode_frame.is_some() && !self.playing {
-            ctx.request_repaint_after(Duration::from_millis(30));
+        if self.pending_decode_frame.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(16));
         }
     }
 
@@ -310,31 +332,11 @@ impl LvMosaicApp {
 
     fn toggle_play(&mut self) {
         self.playing = !self.playing;
-        if self.playing {
-            self.last_play_tick = Some(Instant::now());
-        }
     }
 
     fn tick_playback(&mut self) {
-        if !self.playing { return; }
-        let fps = self.fps();
-        if fps <= 0.0 { return; }
-
-        let now  = Instant::now();
-        let tick = self.last_play_tick.get_or_insert(now);
-        let frames_to_advance = (now.duration_since(*tick).as_secs_f64() * fps) as u64;
-
-        if frames_to_advance > 0 {
-            *tick = now;
-            let next = self.current_frame + frames_to_advance;
-            if next >= self.total_frames() {
-                self.current_frame = 0;
-                self.playing = false;
-            } else {
-                self.current_frame = next;
-            }
-            self.loaded_frame = None;
-        }
+        // フレーム進行は update_preview_texture 内のデコード完了で行う
+        // 壁時計ベースの進行だとデコードが追いつかず結果が常に破棄される
     }
 
     fn handle_keyboard(&mut self, ctx: &Context) {

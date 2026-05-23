@@ -3,6 +3,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use crate::model::VideoInfo;
 
+/// コンソールウィンドウを表示しないコマンドを生成するヘルパー
+fn no_window_cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 // ---- バイナリ解決 -------------------------------------------------------
 
 #[cfg(windows)]
@@ -44,7 +55,7 @@ pub struct FfmpegStatus {
 pub fn check_ffmpeg() -> FfmpegStatus {
     let path = ffmpeg_path();
     let bundled = bundled_path(FFMPEG_BIN).is_some();
-    let available = Command::new(&path)
+    let available = no_window_cmd(&path)
         .arg("-version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -56,7 +67,7 @@ pub fn check_ffmpeg() -> FfmpegStatus {
 
 /// FFprobeでメタ情報を取得する
 pub fn probe_video(path: &Path) -> Result<VideoInfo> {
-    let output = Command::new(ffprobe_path())
+    let output = no_window_cmd(ffprobe_path())
         .args([
             "-v", "quiet",
             "-print_format", "json",
@@ -145,7 +156,7 @@ pub(crate) fn parse_fps(r_frame_rate: &str) -> f64 {
 pub fn decode_frame(video_path: &Path, frame_index: u64, fps: f64, width: u32, height: u32) -> Result<Vec<u8>> {
     let time_sec = frame_index as f64 / fps;
 
-    let output = Command::new(ffmpeg_path())
+    let output = no_window_cmd(ffmpeg_path())
         .args([
             "-ss", &format!("{:.6}", time_sec),
             "-i", video_path.to_str().context("invalid path")?,
@@ -211,7 +222,7 @@ pub fn spawn_encoder(
     crf: u32,
     preset: &str,
 ) -> Result<std::process::Child> {
-    let child = Command::new(ffmpeg_path())
+    let child = no_window_cmd(ffmpeg_path())
         .args([
             "-y",
             // 映像入力: stdin (rawvideo RGB24)
