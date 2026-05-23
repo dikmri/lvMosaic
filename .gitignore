@@ -1,0 +1,17 @@
+# Rust
+lvmosaic/target/
+lvmosaic/Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Autosave / temp
+*.autosave.json
+*.tmp

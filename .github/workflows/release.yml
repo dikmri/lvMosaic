@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lvmosaic/target
+          key: windows-cargo-${{ hashFiles('lvmosaic/Cargo.lock') }}
+          restore-keys: windows-cargo-
+
+      - name: Build release binary
+        working-directory: lvmosaic
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Download FFmpeg (LGPL shared)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
+          $binDir = (Get-ChildItem -Path ffmpeg_tmp -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1).DirectoryName
+          Write-Host "FFmpeg bin dir: $binDir"
+          New-Item -ItemType Directory -Force dist
+          Copy-Item "$binDir\ffmpeg.exe"  dist\
+          Copy-Item "$binDir\ffprobe.exe" dist\
+          Copy-Item "$binDir\*.dll"       dist\
+          # ライセンスファイル
+          $licFile = Get-ChildItem -Path ffmpeg_tmp -Recurse -Filter "LICENSE*" | Select-Object -First 1
+          if ($licFile) { Copy-Item $licFile.FullName dist\LICENSE.ffmpeg.txt }
+
+      - name: Assemble release package
+        shell: pwsh
+        run: |
+          Copy-Item "lvmosaic\target\x86_64-pc-windows-msvc\release\lvmosaic.exe" dist\
+          Copy-Item "lvmosaic\BUNDLING_FFMPEG.md" dist\
+          Copy-Item "README.md"  dist\
+          Copy-Item "LICENSE"    dist\LICENSE.txt
+          Compress-Archive -Path dist\* -DestinationPath lvMosaic-windows-x64.zip -Force
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: lvMosaic ${{ github.ref_name }}
+          body: |
+            ## lvMosaic ${{ github.ref_name }}
+
+            ### ダウンロード / Download
+            `lvMosaic-windows-x64.zip` をダウンロードして解凍し、`lvmosaic.exe` を起動してください。
+            FFmpeg (LGPL) が同梱されているためインストール不要です。
+
+            ### 変更点
+            - 初回リリース
+
+            ---
+            **FFmpeg** is bundled under [LGPL v2.1](https://ffmpeg.org/legal.html).
+          files: lvMosaic-windows-x64.zip
+          draft: false
+          prerelease: false
