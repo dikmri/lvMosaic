@@ -24,11 +24,13 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: lvMosaic-linux-x64.tar.gz
 
-          - os: macos-13           # Intel
+          # macos-13 (Intel) はランナーキュー枯渇のため廃止。
+          # macos-latest (Apple Silicon) 上で x86_64 向けクロスコンパイル。
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact: lvMosaic-macos-x64.tar.gz
 
-          - os: macos-latest       # Apple Silicon
+          - os: macos-latest       # Apple Silicon (ネイティブ)
             target: aarch64-apple-darwin
             artifact: lvMosaic-macos-arm64.tar.gz
 
@@ -96,17 +98,31 @@ jobs:
           chmod +x dist/ffmpeg dist/ffprobe
           find ffmpeg_tmp -name "LICENSE*" | head -1 | xargs -I{} cp {} dist/LICENSE.ffmpeg.txt || true
 
-      # ---- FFmpeg: macOS Intel/ARM64 (dylibbundler で dylib をバンドル) ----
-      # GitHub ランナーには ffmpeg がプリインストール済み。dylibbundler のみ追加インストール。
-      # HOMEBREW_NO_AUTO_UPDATE=1 で brew の自動更新を抑制し高速化。
-      - name: Install FFmpeg (macOS)
-        if: runner.os == 'macOS'
+      # ---- FFmpeg: macOS Intel (evermeet.cx 静的ビルド) ----
+      # macos-latest (arm64) ランナー上で x86_64 向けクロスコンパイル。
+      # evermeet.cx はシステムフレームワーク専用リンクの静的ビルドを提供するため dylibbundler 不要。
+      - name: Download FFmpeg (macOS Intel static)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          mkdir -p ffmpeg_tmp ffprobe_tmp dist
+          curl --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 15 -fsSL \
+            "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" -o ffmpeg.zip
+          curl --connect-timeout 30 --max-time 180 --retry 3 --retry-delay 15 -fsSL \
+            "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" -o ffprobe.zip
+          unzip -q ffmpeg.zip  -d ffmpeg_tmp/
+          unzip -q ffprobe.zip -d ffprobe_tmp/
+          find ffmpeg_tmp  -name "ffmpeg"  -type f -exec cp {} dist/ffmpeg  \;
+          find ffprobe_tmp -name "ffprobe" -type f -exec cp {} dist/ffprobe \;
+          chmod +x dist/ffmpeg dist/ffprobe
+
+      # ---- FFmpeg: macOS ARM64 (brew + dylibbundler で dylib をバンドル) ----
+      - name: Install FFmpeg (macOS ARM64)
+        if: matrix.target == 'aarch64-apple-darwin'
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: |
           brew install dylibbundler
-          # ffmpeg がプリインストールされていない場合のみ brew でインストール
           if ! command -v ffmpeg &>/dev/null; then
             brew install ffmpeg
           fi
