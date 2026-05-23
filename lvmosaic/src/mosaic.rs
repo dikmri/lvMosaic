@@ -157,3 +157,83 @@ pub fn screen_to_video(screen_pos: egui::Pos2, video_rect: egui::Rect, video_wid
     let y = (screen_pos.y - video_rect.top()) / video_rect.height() * video_height as f32;
     (x, y)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{InterpValues, MosaicKeyframe, MosaicRegion};
+
+    fn vals_no_rot(cx: f32, cy: f32, w: f32, h: f32) -> InterpValues {
+        InterpValues { center_x: cx, center_y: cy, width: w, height: h, rotation_deg: 0.0 }
+    }
+
+    // T-12: 非アクティブフレームでは画素変更なし
+    #[test]
+    fn test_apply_mosaics_inactive_frame() {
+        let w = 20u32; let h = 20u32;
+        let mut pixels = vec![255u8, 0, 0].repeat((w * h) as usize);
+        let original = pixels.clone();
+        let region = MosaicRegion::new("m1".to_string(), "M1".to_string(), 10, 100,
+            MosaicKeyframe { frame: 10, center_x: 10.0, center_y: 10.0,
+                             width: 8.0, height: 8.0, rotation_deg: 0.0 });
+        apply_mosaics(&mut pixels, w, h, &[&region], 5); // frame 5, not active
+        assert_eq!(pixels, original);
+    }
+
+    // T-13: アクティブフレームでモザイク適用
+    #[test]
+    fn test_apply_mosaics_active_frame_no_panic() {
+        let w = 40u32; let h = 40u32;
+        let mut pixels: Vec<u8> = (0..(w * h * 3)).map(|i| (i % 256) as u8).collect();
+        let region = MosaicRegion::new("m1".to_string(), "M1".to_string(), 0, 100,
+            MosaicKeyframe { frame: 0, center_x: 20.0, center_y: 20.0,
+                             width: 16.0, height: 16.0, rotation_deg: 0.0 });
+        apply_mosaics(&mut pixels, w, h, &[&region], 0);
+        assert_eq!(pixels.len(), (w * h * 3) as usize);
+    }
+
+    // T-14: bounding_box 回転なし
+    #[test]
+    fn test_bounding_box_no_rotation() {
+        let (min_x, min_y, max_x, max_y) = bounding_box(50.0, 50.0, 20.0, 10.0, 0.0);
+        assert!((min_x - 40.0).abs() < 1e-3, "min_x={}", min_x);
+        assert!((max_x - 60.0).abs() < 1e-3, "max_x={}", max_x);
+        assert!((min_y - 45.0).abs() < 1e-3, "min_y={}", min_y);
+        assert!((max_y - 55.0).abs() < 1e-3, "max_y={}", max_y);
+    }
+
+    #[test]
+    fn test_bounding_box_90_degrees() {
+        // 90度回転: width と height が入れ替わった形の外接矩形
+        let theta = std::f32::consts::FRAC_PI_2;
+        let (min_x, min_y, max_x, max_y) = bounding_box(0.0, 0.0, 20.0, 10.0, theta);
+        // 幅20,高さ10 を90度回転 → 幅10,高さ20 相当の外接矩形
+        assert!((max_x - min_x - 10.0).abs() < 0.1, "width={}", max_x - min_x);
+        assert!((max_y - min_y - 20.0).abs() < 0.1, "height={}", max_y - min_y);
+    }
+
+    // T-15: is_inside_rotated_rect
+    #[test]
+    fn test_inside_rotated_rect_center() {
+        let v = vals_no_rot(50.0, 50.0, 20.0, 10.0);
+        assert!(is_inside_rotated_rect(50.0, 50.0, &v, 1.0, 0.0));
+    }
+
+    #[test]
+    fn test_inside_rotated_rect_outside_x() {
+        let v = vals_no_rot(50.0, 50.0, 20.0, 10.0);
+        assert!(!is_inside_rotated_rect(62.0, 50.0, &v, 1.0, 0.0));
+    }
+
+    #[test]
+    fn test_inside_rotated_rect_outside_y() {
+        let v = vals_no_rot(50.0, 50.0, 20.0, 10.0);
+        assert!(!is_inside_rotated_rect(50.0, 56.0, &v, 1.0, 0.0));
+    }
+
+    #[test]
+    fn test_inside_rotated_rect_just_inside() {
+        let v = vals_no_rot(50.0, 50.0, 20.0, 10.0);
+        assert!(is_inside_rotated_rect(59.9, 54.9, &v, 1.0, 0.0));
+    }
+}

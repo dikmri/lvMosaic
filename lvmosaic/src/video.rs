@@ -117,7 +117,20 @@ fn parse_probe_output(json: &serde_json::Value) -> Result<VideoInfo> {
     Ok(VideoInfo { width, height, fps, total_frames, duration_sec, video_codec, has_audio, audio_codec, bitrate })
 }
 
-fn parse_fps(r_frame_rate: &str) -> f64 {
+/// FFmpeg が見つからない場合のエラーメッセージ (プラットフォーム別)
+pub fn ffmpeg_not_found_message() -> String {
+    #[cfg(windows)]
+    return "FFmpegが見つかりません。\n\
+             ffmpeg.exe と ffprobe.exe をこのアプリと同じフォルダに置いてください。\n\n\
+             入手先: https://github.com/BtbN/FFmpeg-Builds/releases\n\
+             (ffmpeg-master-latest-win64-lgpl-shared.zip の bin/ 内にあります)".to_string();
+    #[cfg(not(windows))]
+    return "FFmpegが見つかりません。\n\
+             ffmpeg と ffprobe をこのアプリと同じフォルダに置くか、\n\
+             PATH の通った場所にインストールしてください。".to_string();
+}
+
+pub(crate) fn parse_fps(r_frame_rate: &str) -> f64 {
     let parts: Vec<&str> = r_frame_rate.split('/').collect();
     if parts.len() == 2 {
         let num = parts[0].parse::<f64>().unwrap_or(30.0);
@@ -230,4 +243,50 @@ pub fn spawn_encoder(
         .context("ffmpeg (エンコーダ) の起動に失敗しました。")?;
 
     Ok(child)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // T-01: FPS文字列パース
+    #[test]
+    fn test_parse_fps_integer_fraction() {
+        assert!((parse_fps("30/1") - 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_fps_ntsc() {
+        assert!((parse_fps("2997/100") - 29.97).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_fps_film() {
+        assert!((parse_fps("24000/1001") - 23.976).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_fps_plain_number() {
+        assert!((parse_fps("25") - 25.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_fps_zero_denominator_falls_back() {
+        assert!((parse_fps("30/0") - 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_parse_fps_invalid_falls_back() {
+        assert!((parse_fps("bad") - 30.0).abs() < 1e-6);
+    }
+
+    // T-03: 出力パス生成
+    #[test]
+    fn test_make_output_path_suffix() {
+        let path = std::path::PathBuf::from("/tmp/video.mp4");
+        let out = make_output_path(&path);
+        let s = out.to_string_lossy();
+        assert!(s.contains("video_mosaic"), "output: {}", s);
+        assert!(s.ends_with(".mp4"), "output: {}", s);
+    }
 }

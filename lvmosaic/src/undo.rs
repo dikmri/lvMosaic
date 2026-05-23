@@ -107,3 +107,79 @@ fn apply_action_reverse(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ExportSettings, MosaicKeyframe, MosaicRegion};
+
+    fn make_region(id: &str) -> MosaicRegion {
+        MosaicRegion::new(id.to_string(), "N".to_string(), 0, 100,
+            MosaicKeyframe { frame: 0, center_x: 0.0, center_y: 0.0,
+                             width: 10.0, height: 10.0, rotation_deg: 0.0 })
+    }
+
+    // T-09: AddMosaic → Undo → Redo
+    #[test]
+    fn test_undo_redo_add() {
+        let mut stack = UndoStack::new();
+        let mut mosaics = vec![];
+        let mut export = ExportSettings::default();
+
+        mosaics.push(make_region("m1"));
+        stack.push(EditAction::AddMosaic(make_region("m1")));
+
+        assert!(stack.can_undo());
+        assert!(!stack.can_redo());
+
+        stack.undo(&mut mosaics, &mut export);
+        assert_eq!(mosaics.len(), 0);
+        assert!(stack.can_redo());
+
+        stack.redo(&mut mosaics, &mut export);
+        assert_eq!(mosaics.len(), 1);
+    }
+
+    // T-10: RemoveMosaic → Undo
+    #[test]
+    fn test_undo_remove() {
+        let mut stack = UndoStack::new();
+        let mut mosaics = vec![make_region("m1"), make_region("m2")];
+        let mut export = ExportSettings::default();
+
+        let removed = mosaics.remove(0);
+        stack.push(EditAction::RemoveMosaic { index: 0, region: removed });
+        assert_eq!(mosaics.len(), 1);
+
+        stack.undo(&mut mosaics, &mut export);
+        assert_eq!(mosaics.len(), 2);
+        assert_eq!(mosaics[0].id, "m1");
+    }
+
+    // T-11: 新 push がリドゥスタックをクリアする
+    #[test]
+    fn test_push_clears_redo() {
+        let mut stack = UndoStack::new();
+        let mut mosaics = vec![make_region("m1")];
+        let mut export = ExportSettings::default();
+
+        stack.push(EditAction::AddMosaic(make_region("m1")));
+        stack.undo(&mut mosaics, &mut export);
+        assert!(stack.can_redo());
+
+        mosaics.push(make_region("m2"));
+        stack.push(EditAction::AddMosaic(make_region("m2")));
+        assert!(!stack.can_redo(), "redo stack should be cleared after new push");
+    }
+
+    #[test]
+    fn test_empty_stack() {
+        let mut stack = UndoStack::new();
+        let mut mosaics = vec![];
+        let mut export = ExportSettings::default();
+        assert!(!stack.can_undo());
+        assert!(!stack.can_redo());
+        assert!(!stack.undo(&mut mosaics, &mut export));
+        assert!(!stack.redo(&mut mosaics, &mut export));
+    }
+}

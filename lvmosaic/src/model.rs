@@ -221,3 +221,83 @@ impl InterpValues {
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn region(kfs: &[(u64, f32, f32)]) -> MosaicRegion {
+        let first = kfs[0];
+        let mut r = MosaicRegion::new(
+            "t".to_string(), "T".to_string(), 0, 1000,
+            MosaicKeyframe { frame: first.0, center_x: first.1, center_y: first.2,
+                             width: 10.0, height: 10.0, rotation_deg: 0.0 },
+        );
+        for &(f, cx, cy) in kfs.iter().skip(1) {
+            r.set_keyframe(MosaicKeyframe { frame: f, center_x: cx, center_y: cy,
+                                            width: 10.0, height: 10.0, rotation_deg: 0.0 });
+        }
+        r
+    }
+
+    // T-04: キーフレーム線形補間
+    #[test]
+    fn test_interpolate_linear_midpoint() {
+        let r = region(&[(0, 0.0, 0.0), (100, 100.0, 200.0)]);
+        let v = r.interpolate(50).unwrap();
+        assert!((v.center_x - 50.0).abs() < 1e-4, "cx={}", v.center_x);
+        assert!((v.center_y - 100.0).abs() < 1e-4, "cy={}", v.center_y);
+    }
+
+    // T-05: キーフレームクランプ
+    #[test]
+    fn test_interpolate_clamp_before_first() {
+        let r = region(&[(10, 42.0, 0.0)]);
+        let v = r.interpolate(0).unwrap();
+        assert!((v.center_x - 42.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_interpolate_clamp_after_last() {
+        let r = region(&[(10, 0.0, 0.0), (20, 100.0, 0.0)]);
+        let v = r.interpolate(50).unwrap();
+        assert!((v.center_x - 100.0).abs() < 1e-4);
+    }
+
+    // T-06: is_active_at
+    #[test]
+    fn test_is_active_at_boundaries() {
+        let r = MosaicRegion::new("id".to_string(), "n".to_string(), 10, 50,
+            MosaicKeyframe { frame: 10, center_x: 0.0, center_y: 0.0,
+                             width: 10.0, height: 10.0, rotation_deg: 0.0 });
+        assert!(!r.is_active_at(9));
+        assert!(r.is_active_at(10));
+        assert!(r.is_active_at(50));
+        assert!(!r.is_active_at(51));
+    }
+
+    // T-07: ensure_keyframe_at で補間値キーフレーム作成
+    #[test]
+    fn test_ensure_keyframe_creates_interpolated() {
+        let mut r = region(&[(0, 0.0, 0.0), (100, 100.0, 0.0)]);
+        r.ensure_keyframe_at(50);
+        let kf = r.keyframes.iter().find(|k| k.frame == 50).expect("kf not created");
+        assert!((kf.center_x - 50.0).abs() < 1e-4);
+    }
+
+    // T-08: ensure_keyframe_at は既存を重複しない
+    #[test]
+    fn test_ensure_keyframe_no_duplicate() {
+        let mut r = region(&[(50, 99.0, 0.0)]);
+        r.ensure_keyframe_at(50);
+        assert_eq!(r.keyframes.len(), 1);
+        assert!((r.keyframes[0].center_x - 99.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_lerp_midpoint() {
+        assert!((lerp(0.0, 10.0, 0.5) - 5.0).abs() < 1e-6);
+        assert!((lerp(0.0, 10.0, 0.0) - 0.0).abs() < 1e-6);
+        assert!((lerp(0.0, 10.0, 1.0) - 10.0).abs() < 1e-6);
+    }
+}
