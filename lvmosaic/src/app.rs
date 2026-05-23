@@ -1,15 +1,48 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use egui::{Color32, Context, Key, TextureHandle, TextureOptions};
+use egui::{Color32, Context, FontData, FontDefinitions, FontFamily, Key, TextureHandle, TextureOptions};
 
 use crate::model::{MosaicKeyframe, MosaicRegion, Project};
-use crate::mosaic::apply_mosaics;
+use crate::mosaic::apply_mosaics; // エクスポート処理でのみ使用
 use crate::ui::preview::{show_preview, DragState};
 use crate::ui::timeline::show_timeline;
 use crate::ui::properties::show_properties;
 use crate::undo::{EditAction, UndoStack};
 use crate::video::{decode_frame_scaled, make_output_path, probe_video};
+
+/// Windowsシステムフォントから日本語フォントを読み込んでeguiに設定する
+fn setup_fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+
+    // 優先順: メイリオ → 游ゴシック Medium → MS ゴシック
+    let candidates = [
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/YuGothM.ttc",
+        "C:/Windows/Fonts/YuGothR.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+    ];
+
+    for path in &candidates {
+        if let Ok(data) = std::fs::read(path) {
+            fonts.font_data.insert(
+                "cjk".to_owned(),
+                FontData::from_owned(data).into(),
+            );
+            // デフォルトフォントの後に追加 (ラテン文字は既存フォントを優先し、
+            // 日本語グリフは cjk フォントにフォールバックする)
+            for family in [FontFamily::Proportional, FontFamily::Monospace] {
+                fonts.families
+                    .entry(family)
+                    .or_default()
+                    .push("cjk".to_owned());
+            }
+            break;
+        }
+    }
+
+    ctx.set_fonts(fonts);
+}
 
 /// プレビュー解像度スケール
 #[derive(Debug, Clone, PartialEq)]
@@ -66,7 +99,9 @@ pub struct LvMosaicApp {
 }
 
 impl LvMosaicApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        setup_fonts(&cc.egui_ctx);
+
         let ffmpeg_status = crate::video::check_ffmpeg();
         let error_message = if !ffmpeg_status.available {
             Some(
@@ -161,11 +196,9 @@ impl LvMosaicApp {
         let h = project.video.height;
 
         match decode_frame_scaled(&path, frame, fps, w, h, scale) {
-            Ok((mut pixels, pw, ph)) => {
-                // モザイクをプレビューに反映
-                let mosaics: Vec<&MosaicRegion> = project.mosaics.iter().collect();
-                apply_mosaics(&mut pixels, pw, ph, &mosaics, frame);
-
+            Ok((pixels, pw, ph)) => {
+                // プレビューテクスチャは生フレームのみ保持（モザイク処理なし）
+                // モザイクのビジュアルは egui オーバーレイで描画するため不要
                 let image = egui::ColorImage::from_rgb([pw as usize, ph as usize], &pixels);
                 self.preview_texture = Some(ctx.load_texture(
                     "preview",
@@ -233,18 +266,14 @@ impl LvMosaicApp {
         // Undo/Redo
         if ctrl {
             if input.key_pressed(Key::Z) {
-                let p = self.project.as_mut();
-                if let Some(proj) = p {
+                if let Some(proj) = self.project.as_mut() {
                     self.undo_stack.undo(&mut proj.mosaics, &mut proj.export);
-                    self.loaded_frame = None;
                 }
                 return;
             }
             if input.key_pressed(Key::Y) || (input.modifiers.shift && input.key_pressed(Key::Z)) {
-                let p = self.project.as_mut();
-                if let Some(proj) = p {
+                if let Some(proj) = self.project.as_mut() {
                     self.undo_stack.redo(&mut proj.mosaics, &mut proj.export);
-                    self.loaded_frame = None;
                 }
                 return;
             }
@@ -306,14 +335,12 @@ impl LvMosaicApp {
                         let removed = proj.mosaics.remove(region_idx);
                         self.undo_stack.push(EditAction::RemoveMosaic { index: region_idx, region: removed });
                         self.selected_mosaic_id = None;
-                        self.loaded_frame = None;
                         return;
                     }
 
                     if changed {
                         let after = proj.mosaics[region_idx].clone();
                         self.undo_stack.push(EditAction::UpdateMosaic { index: region_idx, before, after });
-                        self.loaded_frame = None;
                     }
                 }
             }
@@ -359,7 +386,6 @@ impl LvMosaicApp {
         self.undo_stack.push(EditAction::AddMosaic(region.clone()));
         proj.mosaics.push(region);
         self.selected_mosaic_id = Some(id);
-        self.loaded_frame = None;
     }
 
     fn save_project(&self) {
@@ -627,16 +653,12 @@ impl eframe::App for LvMosaicApp {
                         }
                     };
 
-                    if result.mosaic_changed {
-                        self.loaded_frame = None;
-                    }
                     if result.delete_mosaic {
                         if let (Some(proj), Some(id)) = (&mut self.project, &self.selected_mosaic_id.clone()) {
                             if let Some(idx) = proj.mosaics.iter().position(|m| &m.id == id) {
                                 let removed = proj.mosaics.remove(idx);
                                 self.undo_stack.push(EditAction::RemoveMosaic { index: idx, region: removed });
                                 self.selected_mosaic_id = None;
-                                self.loaded_frame = None;
                             }
                         }
                     }
@@ -644,7 +666,6 @@ impl eframe::App for LvMosaicApp {
                         if let (Some(proj), Some(id)) = (&mut self.project, &self.selected_mosaic_id.clone()) {
                             if let Some(region) = proj.mosaics.iter_mut().find(|m| &m.id == id) {
                                 region.ensure_keyframe_at(current_frame);
-                                self.loaded_frame = None;
                             }
                         }
                     }
@@ -652,7 +673,6 @@ impl eframe::App for LvMosaicApp {
                         if let (Some(proj), Some(id)) = (&mut self.project, &self.selected_mosaic_id.clone()) {
                             if let Some(region) = proj.mosaics.iter_mut().find(|m| &m.id == id) {
                                 region.remove_keyframe_at(current_frame);
-                                self.loaded_frame = None;
                             }
                         }
                     }
@@ -775,7 +795,7 @@ impl eframe::App for LvMosaicApp {
                     self.add_mosaic(cx, cy, mw, mh);
                 }
 
-                // モザイク位置更新
+                // モザイク位置更新 (ドラッグ移動: loaded_frame は触らない)
                 for (id, vals) in prev_result.mosaic_updates {
                     if let Some(proj) = &mut self.project {
                         if let Some(region) = proj.mosaics.iter_mut().find(|m| m.id == id) {
@@ -787,7 +807,6 @@ impl eframe::App for LvMosaicApp {
                                 kf.height = vals.height;
                                 kf.rotation_deg = vals.rotation_deg;
                             }
-                            self.loaded_frame = None;
                         }
                     }
                 }
