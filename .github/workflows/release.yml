@@ -9,9 +9,28 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
-    name: Build Windows x64
-    runs-on: windows-latest
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: lvMosaic-windows-x64.zip
+
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: lvMosaic-linux-x64.tar.gz
+
+          - os: macos-13           # Intel
+            target: x86_64-apple-darwin
+            artifact: lvMosaic-macos-x64.tar.gz
+
+          - os: macos-latest       # Apple Silicon
+            target: aarch64-apple-darwin
+            artifact: lvMosaic-macos-arm64.tar.gz
 
     steps:
       - name: Checkout
@@ -20,46 +39,127 @@ jobs:
       - name: Setup Rust (stable)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.target }}
 
-      - name: Cache cargo registry
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             lvmosaic/target
-          key: windows-cargo-${{ hashFiles('lvmosaic/Cargo.lock') }}
-          restore-keys: windows-cargo-
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('lvmosaic/Cargo.toml') }}
+          restore-keys: ${{ matrix.target }}-cargo-
 
+      # ---- Linux: システム依存ライブラリ ----
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev \
+            libgl1-mesa-dev libgles2-mesa-dev
+
+      # ---- Build ----
       - name: Build release binary
         working-directory: lvmosaic
-        run: cargo build --release --target x86_64-pc-windows-msvc
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Download FFmpeg (LGPL shared)
+      # ---- FFmpeg: Windows ----
+      - name: Download FFmpeg (Windows LGPL shared)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip"
           Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
-          $binDir = (Get-ChildItem -Path ffmpeg_tmp -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1).DirectoryName
-          Write-Host "FFmpeg bin dir: $binDir"
+          $binDir = (Get-ChildItem ffmpeg_tmp -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1).DirectoryName
           New-Item -ItemType Directory -Force dist
           Copy-Item "$binDir\ffmpeg.exe"  dist\
           Copy-Item "$binDir\ffprobe.exe" dist\
           Copy-Item "$binDir\*.dll"       dist\
-          # ライセンスファイル
-          $licFile = Get-ChildItem -Path ffmpeg_tmp -Recurse -Filter "LICENSE*" | Select-Object -First 1
-          if ($licFile) { Copy-Item $licFile.FullName dist\LICENSE.ffmpeg.txt }
+          $lic = Get-ChildItem ffmpeg_tmp -Recurse -Filter "LICENSE*" | Select-Object -First 1
+          if ($lic) { Copy-Item $lic.FullName dist\LICENSE.ffmpeg.txt }
 
-      - name: Assemble release package
+      # ---- FFmpeg: Linux (LGPL static, 依存なし単体バイナリ) ----
+      - name: Download FFmpeg (Linux LGPL static)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-lgpl.tar.xz" -o ffmpeg.tar.xz
+          mkdir -p ffmpeg_tmp dist
+          tar -xJf ffmpeg.tar.xz -C ffmpeg_tmp
+          # bin/ 直下の実行ファイルをコピー
+          find ffmpeg_tmp -maxdepth 3 -type f -name "ffmpeg"  ! -name "*.so*" -exec cp {} dist/ \;
+          find ffmpeg_tmp -maxdepth 3 -type f -name "ffprobe" ! -name "*.so*" -exec cp {} dist/ \;
+          chmod +x dist/ffmpeg dist/ffprobe
+          find ffmpeg_tmp -name "LICENSE*" | head -1 | xargs -I{} cp {} dist/LICENSE.ffmpeg.txt || true
+
+      # ---- FFmpeg: macOS Intel (evermeet.cx 静的バイナリ) ----
+      - name: Download FFmpeg (macOS Intel static)
+        if: matrix.os == 'macos-13'
+        run: |
+          mkdir -p dist
+          curl -fsSL "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" -o ffmpeg.zip
+          unzip -o ffmpeg.zip -d ffmpeg_tmp
+          cp ffmpeg_tmp/ffmpeg dist/
+          curl -fsSL "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" -o ffprobe.zip
+          unzip -o ffprobe.zip -d ffprobe_tmp
+          cp ffprobe_tmp/ffprobe dist/
+          chmod +x dist/ffmpeg dist/ffprobe
+
+      # ---- FFmpeg: macOS ARM64 (brew + dylibbundler でバンドル) ----
+      - name: Install FFmpeg (macOS ARM64)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install ffmpeg dylibbundler
+          mkdir -p dist/libs
+          cp "$(brew --prefix)/bin/ffmpeg"  dist/
+          cp "$(brew --prefix)/bin/ffprobe" dist/
+          # 依存 dylib を dist/libs/ にコピーして rpath を @executable_path/libs/ に書き換え
+          dylibbundler -b -x dist/ffmpeg  -d dist/libs -p @executable_path/libs/ -od
+          dylibbundler -b -x dist/ffprobe -d dist/libs -p @executable_path/libs/ -od
+
+      # ---- アセンブル: Windows ----
+      - name: Assemble (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Copy-Item "lvmosaic\target\x86_64-pc-windows-msvc\release\lvmosaic.exe" dist\
+          Copy-Item "lvmosaic\target\${{ matrix.target }}\release\lvmosaic.exe" dist\
           Copy-Item "lvmosaic\BUNDLING_FFMPEG.md" dist\
-          Copy-Item "README.md"  dist\
-          Copy-Item "LICENSE"    dist\LICENSE.txt
-          Compress-Archive -Path dist\* -DestinationPath lvMosaic-windows-x64.zip -Force
+          Copy-Item "README.md" dist\
+          Copy-Item "LICENSE"   dist\LICENSE.txt
+          Compress-Archive -Path dist\* -DestinationPath ${{ matrix.artifact }} -Force
+
+      # ---- アセンブル: Unix (Linux / macOS) ----
+      - name: Assemble (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cp "lvmosaic/target/${{ matrix.target }}/release/lvmosaic" dist/
+          chmod +x dist/lvmosaic
+          cp "lvmosaic/BUNDLING_FFMPEG.md" dist/
+          cp README.md dist/
+          cp LICENSE   dist/LICENSE.txt
+          tar -czf "${{ matrix.artifact }}" -C dist .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  # ---- リリース作成 (全プラットフォームのビルド完了後) ----
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -69,14 +169,23 @@ jobs:
             ## lvMosaic ${{ github.ref_name }}
 
             ### ダウンロード / Download
-            `lvMosaic-windows-x64.zip` をダウンロードして解凍し、`lvmosaic.exe` を起動してください。
-            FFmpeg (LGPL) が同梱されているためインストール不要です。
 
-            ### 変更点
-            - 初回リリース
+            | プラットフォーム | ファイル |
+            |---|---|
+            | Windows x64 | `lvMosaic-windows-x64.zip` |
+            | Linux x64 | `lvMosaic-linux-x64.tar.gz` |
+            | macOS Intel (x64) | `lvMosaic-macos-x64.tar.gz` |
+            | macOS Apple Silicon (ARM64) | `lvMosaic-macos-arm64.tar.gz` |
+
+            解凍して `lvmosaic` (または `lvmosaic.exe`) を起動してください。
+            FFmpeg (LGPL v2.1) が同梱されているため別途インストール不要です。
 
             ---
             **FFmpeg** is bundled under [LGPL v2.1](https://ffmpeg.org/legal.html).
-          files: lvMosaic-windows-x64.zip
+          files: |
+            lvMosaic-windows-x64.zip
+            lvMosaic-linux-x64.tar.gz
+            lvMosaic-macos-x64.tar.gz
+            lvMosaic-macos-arm64.tar.gz
           draft: false
           prerelease: false
