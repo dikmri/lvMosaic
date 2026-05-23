@@ -67,8 +67,8 @@ jobs:
         working-directory: lvmosaic
         run: cargo build --release --target ${{ matrix.target }}
 
-      # ---- FFmpeg: Windows ----
-      - name: Download FFmpeg (Windows LGPL shared)
+      # ---- FFmpeg: Windows (BtbN LGPL shared) ----
+      - name: Download FFmpeg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -83,41 +83,28 @@ jobs:
           $lic = Get-ChildItem ffmpeg_tmp -Recurse -Filter "LICENSE*" | Select-Object -First 1
           if ($lic) { Copy-Item $lic.FullName dist\LICENSE.ffmpeg.txt }
 
-      # ---- FFmpeg: Linux (LGPL static, 依存なし単体バイナリ) ----
-      - name: Download FFmpeg (Linux LGPL static)
+      # ---- FFmpeg: Linux (BtbN LGPL static, 依存なし単体バイナリ) ----
+      - name: Download FFmpeg (Linux)
         if: runner.os == 'Linux'
         run: |
-          curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-lgpl.tar.xz" -o ffmpeg.tar.xz
+          curl -fsSL "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-lgpl.tar.xz" \
+            -o ffmpeg.tar.xz
           mkdir -p ffmpeg_tmp dist
           tar -xJf ffmpeg.tar.xz -C ffmpeg_tmp
-          # bin/ 直下の実行ファイルをコピー
           find ffmpeg_tmp -maxdepth 3 -type f -name "ffmpeg"  ! -name "*.so*" -exec cp {} dist/ \;
           find ffmpeg_tmp -maxdepth 3 -type f -name "ffprobe" ! -name "*.so*" -exec cp {} dist/ \;
           chmod +x dist/ffmpeg dist/ffprobe
           find ffmpeg_tmp -name "LICENSE*" | head -1 | xargs -I{} cp {} dist/LICENSE.ffmpeg.txt || true
 
-      # ---- FFmpeg: macOS Intel (evermeet.cx 静的バイナリ) ----
-      - name: Download FFmpeg (macOS Intel static)
-        if: matrix.os == 'macos-13'
-        run: |
-          mkdir -p dist
-          curl -fsSL "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" -o ffmpeg.zip
-          unzip -o ffmpeg.zip -d ffmpeg_tmp
-          cp ffmpeg_tmp/ffmpeg dist/
-          curl -fsSL "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" -o ffprobe.zip
-          unzip -o ffprobe.zip -d ffprobe_tmp
-          cp ffprobe_tmp/ffprobe dist/
-          chmod +x dist/ffmpeg dist/ffprobe
-
-      # ---- FFmpeg: macOS ARM64 (brew + dylibbundler でバンドル) ----
-      - name: Install FFmpeg (macOS ARM64)
-        if: matrix.os == 'macos-latest'
+      # ---- FFmpeg: macOS Intel/ARM64 (brew + dylibbundler で dylib をバンドル) ----
+      # evermeet.cx は応答不安定なため brew に統一
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
         run: |
           brew install ffmpeg dylibbundler
           mkdir -p dist/libs
           cp "$(brew --prefix)/bin/ffmpeg"  dist/
           cp "$(brew --prefix)/bin/ffprobe" dist/
-          # 依存 dylib を dist/libs/ にコピーして rpath を @executable_path/libs/ に書き換え
           dylibbundler -b -x dist/ffmpeg  -d dist/libs -p @executable_path/libs/ -od
           dylibbundler -b -x dist/ffprobe -d dist/libs -p @executable_path/libs/ -od
 
@@ -177,7 +164,7 @@ jobs:
             | macOS Intel (x64) | `lvMosaic-macos-x64.tar.gz` |
             | macOS Apple Silicon (ARM64) | `lvMosaic-macos-arm64.tar.gz` |
 
-            解凍して `lvmosaic` (または `lvmosaic.exe`) を起動してください。
+            解凍して `lvmosaic`（または `lvmosaic.exe`）を起動してください。
             FFmpeg (LGPL v2.1) が同梱されているため別途インストール不要です。
 
             ---
